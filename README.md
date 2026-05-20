@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="passthebeat.png" alt="pass-the-beat" width="180" />
+</p>
+
 # pass-the-beat
 
 A small, Dockerized HTTP service that runs the **beat-this** neural beat

@@ -1,4 +1,4 @@
-# beat-this
+# pass-the-beat
 
 A small, Dockerized HTTP service that runs the **beat-this** neural beat
 tracker (CPJKU — <https://github.com/CPJKU/beat_this>) over audio files
@@ -6,7 +6,7 @@ and returns a beat grid.
 
 It is a **sidecar for [pass-the-aux](https://github.com/marijnvandevoorde/pass-the-aux)**,
 our DJ app: pass-the-aux calls it through its `AudioAnalyzer` port when
-`BEAT_ANALYZER=beatthis` to get a high-recall beat grid for track
+`BEAT_ANALYZER=pass-the-beat` to get a high-recall beat grid for track
 analysis and auto-transition. It is a plain HTTP API, so it can also be
 used standalone.
 
@@ -77,10 +77,10 @@ On failure: a non-2xx status with `{ "error": "<message>" }`.
 ### As part of pass-the-aux (normal case)
 
 The [pass-the-aux](https://github.com/marijnvandevoorde/pass-the-aux)
-`docker compose` stack already wires this service up on the private
-`backend` network and mounts the shared `music/` directory. Nothing
-extra to do — set `BEAT_ANALYZER=beatthis` on the pass-the-aux side and
-bring the stack up.
+`docker compose` stack already wires this service up on the shared
+`pta` network and mounts the shared `music/` directory. Nothing extra
+to do — set `BEAT_ANALYZER=pass-the-beat` on the pass-the-aux side and bring
+the stack up.
 
 ### Standalone
 

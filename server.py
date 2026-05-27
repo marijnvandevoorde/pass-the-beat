@@ -1,17 +1,17 @@
-"""beat-this analysis sidecar.
+"""pass-the-beat — sidecar service that runs the beat-this model.
 
 A small FastAPI service that runs the CPJKU `beat-this` beat tracker over
 audio files on a shared, read-only `/music` volume and returns a beat
 grid. pass-the-aux calls it through its `AudioAnalyzer` port (the
-`BeatThisAnalyzer` adapter) when `BEAT_ANALYZER=beatthis`.
+`BeatThisAnalyzer` adapter) when `BEAT_ANALYZER=pass-the-beat`.
 
 Why a sidecar: beat-this is a PyTorch model — it has no place in
-pass-the-aux's near-zero-dependency, type-stripped TypeScript runtime. This
-mirrors the existing `sptf/` precedent: a self-contained Python service,
-reached over a plain HTTP contract on the private `backend` network.
+pass-the-aux's near-zero-dependency, type-stripped TypeScript runtime. So
+we wrap it in a self-contained Python service, reached over a plain HTTP
+contract on the shared `pta` docker network.
 
 The model is loaded ONCE at startup (it is the expensive part) and reused
-for every request, exactly like sptf reuses its authenticated session.
+for every request.
 """
 
 import os
@@ -52,7 +52,7 @@ async def lifespan(_app: FastAPI):
     _model["audio2beats"] = None
 
 
-app = FastAPI(title="beat-this sidecar", lifespan=lifespan)
+app = FastAPI(title="pass-the-beat sidecar", lifespan=lifespan)
 
 
 class AnalyzeRequest(BaseModel):

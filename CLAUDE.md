@@ -1,9 +1,9 @@
-# beat-this sidecar
+# pass-the-beat sidecar
 
 Dockerized Python service that runs the CPJKU **beat-this** beat tracker
 over audio files and returns a beat grid. pass-the-aux calls it through its
 `AudioAnalyzer` port (`src/infrastructure/beat-this-analyzer.ts`) when
-`BEAT_ANALYZER=beatthis`.
+`BEAT_ANALYZER=pass-the-beat`.
 
 ## Why this exists
 
@@ -11,9 +11,9 @@ pass-the-aux's in-house Ellis-DP beat tracker is sub-frame accurate but has
 mediocre recall — quiet intros, ballads, and sparse drums often yield no
 grid, which hurts the auto-transition. beat-this (a PyTorch model) has
 much better recall. PyTorch has no place in pass-the-aux's near-zero-dep,
-type-stripped TypeScript runtime, so it lives here as a sidecar — same
-pattern as `sptf/`: a self-contained service on the private `backend`
-network reached over a plain HTTP contract.
+type-stripped TypeScript runtime, so it lives here as a sidecar — a
+self-contained service on the shared `pta` docker network reached over
+a plain HTTP contract.
 
 ## Contract
 
@@ -55,7 +55,7 @@ publishes a host port and requires `MUSIC_DIR` in `.env`:
 ```bash
 cp .env.example .env   # set MUSIC_DIR
 docker compose up -d --build
-docker compose logs -f beat-this
+docker compose logs -f pass-the-beat
 curl http://localhost:8000/healthz
 ```
 

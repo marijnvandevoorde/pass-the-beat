@@ -1,8 +1,8 @@
-# Standalone compose for the beat-this sidecar.
+# Standalone compose for the pass-the-beat sidecar.
 #
-# In the normal deployment, beat-this runs as part of the pass-the-aux
+# In the normal deployment, pass-the-beat runs as part of the pass-the-aux
 # stack (https://github.com/marijnvandevoorde/pass-the-aux), which
-# defines its own `beat-this` service on a private network. This file
+# defines its own `pass-the-beat` service on a private network. This file
 # is for running the service on its own — e.g. local testing or as a
 # shared analysis service for a non-pass-the-aux caller.
 #
@@ -11,12 +11,12 @@
 #   curl http://localhost:8000/healthz
 
 services:
-  beat-this:
+  pass-the-beat:
     build: .
-    image: beat-this
-    container_name: beat-this
+    image: pass-the-beat
+    container_name: pass-the-beat
     ports:
-      - "${BEATTHIS_HOST_PORT:-8000}:8000"
+      - "${PASS_THE_BEAT_HOST_PORT:-8000}:8000"
     volumes:
       - "${MUSIC_DIR}:/music:ro"
     environment:

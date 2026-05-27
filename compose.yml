@@ -1,0 +1,31 @@
+# Standalone compose for the beat-this sidecar.
+#
+# In the normal deployment, beat-this runs as part of the pass-the-aux
+# stack (https://github.com/marijnvandevoorde/pass-the-aux), which
+# defines its own `beat-this` service on a private network. This file
+# is for running the service on its own — e.g. local testing or as a
+# shared analysis service for a non-pass-the-aux caller.
+#
+#   cp .env.example .env   # optional — defaults work
+#   docker compose up -d --build
+#   curl http://localhost:8000/healthz
+
+services:
+  beat-this:
+    build: .
+    image: beat-this
+    container_name: beat-this
+    ports:
+      - "${BEATTHIS_HOST_PORT:-8000}:8000"
+    volumes:
+      - "${MUSIC_DIR}:/music:ro"
+    environment:
+      - BEATTHIS_CHECKPOINT=${BEATTHIS_CHECKPOINT:-final0}
+      - BEATTHIS_DEVICE=${BEATTHIS_DEVICE:-cpu}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

@@ -5,13 +5,12 @@ name: Publish image
 #
 #   git tag v1.2.3 && git push origin v1.2.3
 #
-# The image is published as ghcr.io/<owner>/<repo> with tags derived from the
-# git tag: the full version (1.2.3), the major.minor (1.2), and `latest` for
-# non-prerelease tags. Auth uses the built-in GITHUB_TOKEN — no secrets needed.
+# Each platform is built on its native runner (amd64 on ubuntu-latest,
+# arm64 on ubuntu-24.04-arm) — QEMU emulation is not used because
+# installing PyTorch (~1.5 GB) and baking the checkpoint under emulation
+# would take hours and risk timeouts.
 #
-# Note: this image bakes torch + the beat-this checkpoint, so the first build
-# is slow and large. The GitHub Actions layer cache below makes later builds
-# fast as long as requirements.txt and the Dockerfile are unchanged.
+# Auth uses the built-in GITHUB_TOKEN — no secrets needed.
 #
 # One-time setup: after the first run, open the package on GitHub and set its
 # visibility to Public so anyone can pull it for free (public packages are
@@ -30,8 +29,14 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,7 +51,58 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Derive image tags and labels
+      - name: Sanitise platform name for artifact key
+        id: platform
+        run: echo "pair=$(echo ${{ matrix.platform }} | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Reuse layers across runs to keep rebuilds fast (matters most here:
+          # the torch + checkpoint layers are expensive to rebuild).
+          cache-from: type=gha,scope=${{ steps.platform.outputs.pair }}
+          cache-to: type=gha,scope=${{ steps.platform.outputs.pair }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.platform.outputs.pair }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Derive final image tags and labels
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -55,15 +111,9 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Reuse layers across runs to keep rebuilds fast (matters most here:
-          # the torch + checkpoint layers are expensive to rebuild).
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create and push multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)

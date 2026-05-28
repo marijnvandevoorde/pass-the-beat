@@ -1,0 +1,7 @@
+# Secrets — kept per-repo so contributors never commit them, regardless
+# of their personal global gitignore.
+.env
+
+# Python build artifacts.
+__pycache__/
+*.pyc

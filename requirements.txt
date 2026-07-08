@@ -1,6 +1,6 @@
 fastapi==0.139.0
 uvicorn[standard]==0.50.2
-numpy>=2.5.0,<2.6
+numpy>=2.5.1,<2.6
 # torch / torchaudio are installed separately from the CPU wheel index
 # in the Dockerfile (the default index pulls the multi-GB CUDA build).
 beat_this @ git+https://github.com/CPJKU/beat_this.git

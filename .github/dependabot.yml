@@ -1,10 +1,11 @@
-# Dependabot configuration.
+# Dependabot configuration for the pass-the-beat repo.
 # Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
 # Dependabot opens PRs automatically on the schedule below.
-# Minor + patch updates are grouped into a single PR and are auto-merged by
-# .github/workflows/dependabot-auto-merge.yml once checks pass.
-# Major updates get their own PR for manual review and are not auto-merged.
+# Minor + patch updates are grouped into a single PR per ecosystem and are
+# auto-merged by .github/workflows/dependabot-auto-merge.yml once checks pass.
+# Major updates are intentionally left ungrouped: each gets its own PR for
+# manual review and is not auto-merged.
 version: 2
 updates:
   # Python dependencies (requirements.txt at the repo root).
@@ -15,6 +16,35 @@ updates:
     open-pull-requests-limit: 10
     groups:
       pip-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Base image in Dockerfile at the repo root.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      docker-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Actions used by the workflows in .github/workflows/.
+  # Grouped too: action minor/patch bumps are routine and should land on their own.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      actions-minor-patch:
         patterns:
           - "*"
         update-types:

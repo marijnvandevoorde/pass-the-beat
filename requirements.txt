@@ -1,4 +1,4 @@
-fastapi==0.141.1
+fastapi==0.142.2
 uvicorn[standard]==0.54.0
 numpy>=2.5.3,<2.6
 # torch / torchaudio are installed separately from the CPU wheel index

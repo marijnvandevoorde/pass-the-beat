@@ -28,9 +28,22 @@ sidecar reached over a plain HTTP contract.
 
 ## API
 
+### `POST /analyze-audio`
+
+The audio file itself as the raw request body (any content type ffmpeg
+can decode; send `Content-Length`). An optional `X-Track-Name` header is
+only used in error messages. This is what pass-the-aux uses: the service
+needs no access to the caller's storage. The upload is spooled to a temp
+file, analysed and deleted; bodies over `MAX_UPLOAD_BYTES` (200 MB) get
+`413`.
+
+```bash
+curl -X POST http://localhost:8000/analyze-audio --data-binary @song.mp3
+```
+
 ### `POST /analyze`
 
-Request body:
+For setups that share a folder instead. Request body:
 
 ```json
 { "path": "path/to/song.mp3" }
@@ -55,7 +68,10 @@ Response:
 - `downbeatIndices` — indices into `beats` that fall on a downbeat.
 - `firstSolidBeat` — index of the first reliable beat, or `-1`.
 
-On failure: a non-2xx status with `{ "error": "<message>" }`.
+Both endpoints return the same response. On failure: a non-2xx status
+with `{ "error": "<message>" }` — `422` when the audio cannot be decoded
+(permanent for that file), `503` while the model is still loading, `500`
+when the model itself fails.
 
 ### `GET /healthz`
 
@@ -73,8 +89,12 @@ On failure: a non-2xx status with `{ "error": "<message>" }`.
 - The service decodes audio itself with the **`ffmpeg` binary** and
   feeds beat-this a raw waveform; beat-this's own torchaudio/soundfile
   loader cannot decode mp3 in this image.
-- The host `music/` directory is mounted **read-only** at `/music`. The
-  service never writes.
+- With `/analyze-audio` the service has no storage at all. With
+  `/analyze`, the host `music/` directory is mounted **read-only** at
+  `/music`. The service never writes outside its temp dir.
+- It holds nothing between requests, so it can be scaled to zero and
+  started only when there is something to analyse (pass-the-aux does this
+  on Kubernetes).
 
 ## Run
 
@@ -82,18 +102,18 @@ On failure: a non-2xx status with `{ "error": "<message>" }`.
 
 The [pass-the-aux](https://github.com/marijnvandevoorde/pass-the-aux)
 `docker compose` stack already wires this service up on the shared
-`pta` network and mounts the shared `music/` directory. Nothing extra
-to do — set `BEAT_ANALYZER=pass-the-beat` on the pass-the-aux side and bring
+`pta` network; pass-the-aux uploads each track to `/analyze-audio`.
+Nothing extra to do — set `BEAT_ANALYZER=pass-the-beat` on the pass-the-aux side and bring
 the stack up.
 
 ### Standalone
 
 A self-contained `compose.yml` ships in this repo. Copy
-`.env.example` to `.env` and point `MUSIC_DIR` at the host directory
-holding your audio:
+`.env.example` to `.env`; point `MUSIC_DIR` at a host directory of audio
+if you want to use `/analyze` by path:
 
 ```bash
-cp .env.example .env   # then edit MUSIC_DIR
+cp .env.example .env   # optionally edit MUSIC_DIR
 docker compose up -d --build
 curl http://localhost:8000/healthz
 curl -X POST http://localhost:8000/analyze \
@@ -102,14 +122,14 @@ curl -X POST http://localhost:8000/analyze \
 ```
 
 Defaults: host port `8000`, CPU-only torch, `final0` checkpoint.
-`MUSIC_DIR` is required; the rest of `.env.example` documents optional
+`MUSIC_DIR` defaults to `./music`; `.env.example` documents the optional
 overrides.
 
 ## Files
 
 | Path | Role |
 |---|---|
-| `server.py` | FastAPI app — model lifespan, `/analyze`, `/healthz` |
+| `server.py` | FastAPI app — model lifespan, `/analyze-audio`, `/analyze`, `/healthz` |
 | `Dockerfile` | `python:3.11-slim` + ffmpeg + torch (CPU) + `beat_this` |
 | `compose.yml` | Standalone single-service deployment |
 | `.env.example` | Optional overrides for the standalone deploy |

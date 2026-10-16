@@ -1,8 +1,10 @@
 """pass-the-beat — sidecar service that runs the beat-this model.
 
 A small FastAPI service that runs the CPJKU `beat-this` beat tracker over
-audio files on a shared, read-only `/music` volume and returns a beat
-grid. pass-the-aux calls it through its `AudioAnalyzer` port (the
+audio and returns a beat grid. The audio is either uploaded as the request
+body (`POST /analyze-audio`, what pass-the-aux uses: the service needs no
+storage of its own) or read from a read-only `/music` mount
+(`POST /analyze`, for the compose setup that still shares a folder). pass-the-aux calls it through its `AudioAnalyzer` port (the
 `BeatThisAnalyzer` adapter) when `BEAT_ANALYZER=pass-the-beat`.
 
 Why a sidecar: beat-this is a PyTorch model — it has no place in
@@ -16,10 +18,12 @@ for every request.
 
 import os
 import subprocess
+import tempfile
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -32,6 +36,9 @@ DEVICE = os.environ.get("BEATTHIS_DEVICE", "cpu")
 # Mono PCM sample rate we decode to before analysis. beat-this resamples
 # internally; 22.05 kHz is its native rate, so no resample happens.
 DECODE_SR = 22_050
+# Largest upload `/analyze-audio` accepts. A 10-minute 24-bit FLAC is
+# well under this; anything bigger is not a song.
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
 _model = {"audio2beats": None}
 
@@ -162,23 +169,19 @@ def healthz() -> dict:
     }
 
 
-@app.post("/analyze")
-def analyze(req: AnalyzeRequest):
+def _analyze_file(full: str, label: str):
+    """Run the model over one local audio file. Returns the wire dict, or
+    a JSONResponse error: 422 when the file cannot be decoded (permanent
+    for that file), 500 when the model itself fails."""
     audio2beats = _model["audio2beats"]
     if audio2beats is None:
         return _err("model not loaded yet", 503)
-
-    full = _safe_path(req.path)
-    if full is None:
-        return _err(f"path outside the music root: {req.path}", 400)
-    if not os.path.isfile(full):
-        return _err(f"file not found: {req.path}", 404)
 
     # One ffmpeg decode feeds both the model and the first-solid
     # heuristic — beat-this never opens the file itself.
     pcm = _decode_mono(full)
     if pcm.size == 0:
-        return _err(f"could not decode audio: {req.path}", 500)
+        return _err(f"could not decode audio: {label}", 422)
 
     try:
         beat_arr, downbeat_arr = audio2beats(pcm, DECODE_SR)
@@ -215,3 +218,46 @@ def analyze(req: AnalyzeRequest):
         "duration": duration,
         "firstSolidBeat": _first_solid_beat(pcm, beats),
     }
+
+
+@app.post("/analyze")
+def analyze(req: AnalyzeRequest):
+    """Analyse a file on the shared `/music` mount (compose setups)."""
+    if _model["audio2beats"] is None:
+        return _err("model not loaded yet", 503)
+
+    full = _safe_path(req.path)
+    if full is None:
+        return _err(f"path outside the music root: {req.path}", 400)
+    if not os.path.isfile(full):
+        return _err(f"file not found: {req.path}", 404)
+    return _analyze_file(full, req.path)
+
+
+@app.post("/analyze-audio")
+async def analyze_audio(request: Request):
+    """Analyse audio uploaded as the raw request body. The caller owns the
+    storage; this service only spools the bytes to a temp file (ffmpeg
+    needs a seekable input for m4a with a trailing moov atom), analyses
+    it and deletes it again."""
+    if _model["audio2beats"] is None:
+        return _err("model not loaded yet", 503)
+
+    fd, tmp = tempfile.mkstemp(prefix="ptb-", suffix=".audio")
+    try:
+        size = 0
+        with os.fdopen(fd, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    return _err("upload too large", 413)
+                f.write(chunk)
+        if size == 0:
+            return _err("empty body", 400)
+        label = request.headers.get("x-track-name", "upload")
+        return await run_in_threadpool(_analyze_file, tmp, label)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass

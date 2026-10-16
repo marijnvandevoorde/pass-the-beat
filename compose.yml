@@ -18,7 +18,7 @@ services:
     ports:
       - "${PASS_THE_BEAT_HOST_PORT:-8000}:8000"
     volumes:
-      - "${MUSIC_DIR}:/music:ro"
+      - "${MUSIC_DIR:-./music}:/music:ro"
     environment:
       - BEATTHIS_CHECKPOINT=${BEATTHIS_CHECKPOINT:-final0}
       - BEATTHIS_DEVICE=${BEATTHIS_DEVICE:-cpu}

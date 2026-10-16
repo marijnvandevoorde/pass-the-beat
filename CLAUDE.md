@@ -17,12 +17,18 @@ a plain HTTP contract.
 
 ## Contract
 
+- `POST /analyze-audio` — the audio file as the raw request body (what
+  pass-the-aux sends; the service needs no storage). Spooled to a temp
+  file, analysed, deleted. Same response as `/analyze`.
 - `POST /analyze` — body `{ "path": "<uid>/song.mp3" }`, a path relative
   to the read-only `/music` mount. Returns
   `{ beats[], downbeatIndices[], bpm, confidence, duration, firstSolidBeat }`.
   `beats` are second offsets; `downbeatIndices` index into `beats`;
   `firstSolidBeat` is a beat index (or -1). On failure: non-2xx +
-  `{ error }`.
+  `{ error }`: 422 undecodable audio (permanent for that file), 503
+  model still loading, 500 model failure. pass-the-aux stores a 422 as
+  "analysed, no grid" so it is not retried; 503 / unreachable means "try
+  again later".
 - `GET /healthz` — `{ status, model_loaded, checkpoint }`.
 
 The Node adapter collapses `downbeatIndices` to the existing 4/4
@@ -42,9 +48,17 @@ own torchaudio/soundfile loader cannot decode mp3 in this image.
 
 ## File access
 
-The host `music/` dir is mounted **read-only** at `/music`. pass-the-aux
-mounts the same dir at `/app/music`; the Node adapter sends paths
-relative to that shared root (`<uid>/<file>`). The service never writes.
+pass-the-aux uploads the bytes (`/analyze-audio`); its library lives in
+an object-storage bucket, not on a shared volume. `/analyze` by path
+still works for compose setups that mount a `music/` dir read-only at
+`/music`. The service never writes outside its temp dir.
+
+## Scaling
+
+The service is stateless, so on Kubernetes it runs at **zero replicas**
+and pass-the-aux scales it to 1 only when tracks need a grid (it waits
+for `/healthz` to report `model_loaded`), then back to 0 after an idle
+period. Model load time is therefore paid once per batch, not per track.
 
 ## Operations
 
@@ -66,6 +80,6 @@ curl http://localhost:8000/healthz
 | `server.py` | FastAPI app — model lifespan + `/analyze` + `/healthz` |
 | `Dockerfile` | python:3.11-slim + ffmpeg + torch CPU + beat_this |
 | `compose.yml` | Standalone single-service deploy (pass-the-aux's stack defines its own) |
-| `.env.example` | Standalone overrides — `MUSIC_DIR` is required |
+| `.env.example` | Standalone overrides (`MUSIC_DIR` only for `/analyze`) |
 | `requirements.txt` | fastapi, uvicorn, numpy, beat_this (git) |
 | `.dockerignore` | keeps build context lean |

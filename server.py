@@ -129,6 +129,22 @@ def _downbeat_indices(beats: list[float], downbeats: list[float]) -> list[int]:
     return idxs
 
 
+def _bpm(intervals: np.ndarray) -> float | None:
+    """Tempo from the inter-beat intervals. beat-this places beats on a
+    50 fps frame grid, so a single interval (and hence the median) is
+    quantised to 20 ms steps: 0.46 s / 0.48 s, i.e. 130.4 / 125 BPM, with
+    nothing in between. Averaging the intervals of the steady part (within
+    10 % of the median, so missed or doubled beats don't count) cancels
+    the quantisation and gives a usable tempo, e.g. 128.0."""
+    if intervals.size == 0:
+        return None
+    med = float(np.median(intervals))
+    if med <= 0:
+        return None
+    steady = intervals[np.abs(intervals - med) <= 0.1 * med]
+    return 60.0 / float(np.mean(steady if steady.size else intervals))
+
+
 def _first_solid_beat(pcm: np.ndarray, beats: list[float]) -> int:
     """Index of the first beat where sustained energy begins — used as a
     visual "first solid cue" marker past sparse intros. Returns 0 when no
@@ -200,7 +216,7 @@ def _analyze_file(full: str, label: str):
         }
 
     intervals = np.diff(beats)
-    bpm = 60.0 / float(np.median(intervals)) if intervals.size else None
+    bpm = _bpm(intervals)
     # Confidence proxy: beat-this gives no score, so derive one from how
     # regular the inter-beat intervals are (low coefficient of variation
     # ⇒ steady grid ⇒ high confidence).

@@ -106,6 +106,14 @@ The [pass-the-aux](https://github.com/marijnvandevoorde/pass-the-aux)
 Nothing extra to do — set `BEAT_ANALYZER=pass-the-beat` on the pass-the-aux side and bring
 the stack up.
 
+### In production
+
+Production runs on the Kubernetes cluster `sv-oke` (Deployment `pass-the-beat`, namespace
+`apps`), scaled from 0 to 1 by pass-the-aux while it analyses. `scripts/deploy.sh` ships
+`origin/main` there with the shared `sv-deploy` script from the Oracle repo (config in
+`deploy.env`); `scripts/deploy.sh --check` shows what runs. `SV_DEPLOY` overrides the script's
+path (default `../../Oracle/deploy/sv-deploy`).
+
 ### Standalone
 
 A self-contained `compose.yml` ships in this repo. Copy

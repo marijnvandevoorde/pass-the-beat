@@ -1,0 +1,44 @@
+name: CI
+
+# Cheap checks so Dependabot updates get tested before they auto-merge:
+# install the CPU torch build + requirements.txt, then boot the app (loads the
+# beat-this model) and analyse a generated click track (tests/smoke.py).
+# The docker image is not built here: that stays manual (docker-publish.yml).
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install ffmpeg
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg)
+
+      # Same as the Dockerfile: torch from the CPU wheel index first.
+      - name: Install dependencies
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+          pip install -r requirements.txt httpx2
+
+      - name: Compile
+        run: python -m compileall -q server.py tests
+
+      - name: Smoke test
+        run: python tests/smoke.py

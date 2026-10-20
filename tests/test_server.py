@@ -73,8 +73,9 @@ class Contract(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
-        for key in ("beats", "downbeatIndices", "downbeatPhase", "bpm", "confidence",
-                    "duration", "firstSolidBeat", "analyzerVersion"):
+        for key in ("beats", "downbeatIndices", "downbeatPhase", "barStarts", "bpm",
+                    "confidence", "duration", "firstSolidBeat", "mixOutBeat",
+                    "analyzerVersion"):
             self.assertIn(key, body)
         self.assertEqual(body["analyzerVersion"], grid.ANALYZER_VERSION)
         self.assertAlmostEqual(body["duration"], 30, delta=0.1)
@@ -83,6 +84,9 @@ class Contract(unittest.TestCase):
         self.assertTrue(all(abs(s - 0.5) < 0.01 for s in steps), "extra beats left in")
         self.assertEqual(body["downbeatPhase"], 1)
         self.assertEqual(body["downbeatIndices"][0] % 4, 1)
+        self.assertEqual(body["barStarts"], list(range(1, len(body["beats"]), 4)))
+        # 15 bars: no phrase boundary past the middle leaves 8 bars to mix.
+        self.assertEqual(body["mixOutBeat"], -1)
 
     def test_undecodable_is_422_with_reason(self):
         r = self.client().post("/analyze-audio", content=b"not audio at all" * 100)
@@ -97,6 +101,8 @@ class Contract(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["beats"], [])
         self.assertEqual(r.json()["firstSolidBeat"], -1)
+        self.assertEqual(r.json()["mixOutBeat"], -1)
+        self.assertEqual(r.json()["barStarts"], [])
 
     def test_model_failure_is_500(self):
         c = self.client(FakeModel(RuntimeError("bad input shape")))
@@ -125,6 +131,8 @@ class Contract(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["analyzerVersion"], 1)
         self.assertTrue(r.json()["beats"])
+        self.assertEqual(r.json()["mixOutBeat"], -1)
+        self.assertTrue(r.json()["barStarts"])
 
     def test_unexpected_error_is_503_not_500(self):
         c = self.client()

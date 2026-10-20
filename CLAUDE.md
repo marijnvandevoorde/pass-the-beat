@@ -22,11 +22,14 @@ a plain HTTP contract.
   file, analysed, deleted. Same response as `/analyze`.
 - `POST /analyze` — body `{ "path": "<uid>/song.mp3" }`, a path relative
   to the read-only `/music` mount. Returns
-  `{ beats[], downbeatIndices[], downbeatPhase, bpm, confidence, duration,
-  firstSolidBeat, analyzerVersion, stats }`. `beats` are second offsets of
-  the cleaned grid; `downbeatIndices` index into `beats` and all sit on
-  `downbeatPhase` (`i % 4`); `firstSolidBeat` is the mix-in beat index (a
-  downbeat) or -1. The README documents every field.
+  `{ beats[], downbeatIndices[], downbeatPhase, barStarts[], bpm,
+  confidence, duration, firstSolidBeat, mixOutBeat, analyzerVersion,
+  stats }`. `beats` are second offsets of the cleaned grid;
+  `downbeatIndices` index into `beats` and all sit on `downbeatPhase`
+  (`i % 4`); `barStarts` is every bar's downbeat (odd bars move the later
+  ones); `firstSolidBeat` is the mix-in beat index and `mixOutBeat` the
+  mix-out beat index (both downbeats, or -1). The README documents every
+  field.
 - Status codes: 200 grid (empty = no pulse); 400/404/413 bad request; 422
   undecodable (permanent for that file); 500 the model failed on this
   input; 503 try again later (loading, queue full, out of memory, ffmpeg
@@ -38,9 +41,9 @@ a plain HTTP contract.
   `BEATTHIS_ANALYZER_VERSION` is bumped, so tell its maintainer.
 - `GET /healthz` — `{ status, model_loaded, checkpoint }`.
 
-The Node adapter collapses `downbeatIndices` to the existing 4/4
-`downbeatPhase` (`downbeatIndices[0] % 4`, which equals our
-`downbeatPhase` since analyzer v2) — no DB schema change.
+pass-the-aux (≥ its `BEATTHIS_ANALYZER_VERSION` 5) stores `barStarts`
+and `mixOutBeat` next to the grid and counts bars from `barStarts`; older
+aux versions ignore them and use `downbeatPhase`, which stays valid.
 
 ## Grid post-processing (`grid.py`)
 
@@ -49,8 +52,13 @@ extra half/third beats in rolls and holes in sparse parts; pass-the-aux
 snaps to the nearest beat and counts bars as `i % 4`, so the raw output
 made fades land off-beat. `regularize` keeps the best steady chain and
 fills whole-beat holes, `assign_bars` picks one bar phase (dropping up to
-3 beats after a break), `mix_in_index` finds the first downbeat with two
-bars of kick/bass at the track's main level. Tuning constants sit at the
+3 beats after a break), `bar_positions` places every bar's downbeat
+(Viterbi: a 3- or 5-beat bar needs ~4 bars of downbeats on the new phase,
+a half-bar shift ~8, because beat-this flips to the half bar in
+breakdowns), `mix_in_index` finds the first downbeat with two bars of
+kick/bass at the track's main level, `mix_out_index` the phrase boundary
+(8 bars from the mix-in) where the outro starts, or the last one that
+leaves 8 bars before the end. Tuning constants sit at the
 top of the file; check changes against real tracks, not only the
 synthetic tests.
 

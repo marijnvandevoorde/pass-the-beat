@@ -12,9 +12,13 @@ on an off-beat and shifts every later bar. This module:
 1. picks the chain of detected beats that best fits one steady period and
    fills holes of a whole number of beats (`regularize`);
 2. derives one bar phase for the whole grid, dropping up to 3 beats after
-   a break so "every 4th beat" stays true across it (`assign_bars`);
+   a break so "every 4th beat" stays true across it (`assign_bars`), and
+   the downbeat of every bar, so a bar of 3 or 5 beats inside a run moves
+   the later bars instead of breaking them (`bar_positions`);
 3. finds the mix-in point: the first downbeat from which the kick/bass
-   band holds for two bars (`mix_in_index`).
+   band holds for two bars (`mix_in_index`);
+4. finds the mix-out point: the phrase boundary where the track drops into
+   its outro, or the last one that leaves room for a mix (`mix_out_index`).
 """
 
 from dataclasses import dataclass, field
@@ -26,7 +30,8 @@ import numpy as np
 # `analyzerVersion` in every response and in /healthz).
 # 1: raw beat-this beats (pass-the-beat up to 2026-10).
 # 2: regularised grid, robust bar phase, kick-based mix-in point.
-ANALYZER_VERSION = 2
+# 3: per-bar downbeats (`barStarts`, odd bars allowed) and a mix-out point.
+ANALYZER_VERSION = 3
 
 # A step between two kept beats may deviate this much from a whole number
 # of periods (in beats). Extra beats sit at 0.33 / 0.5 of a period and are
@@ -51,6 +56,23 @@ LOW_BAND_HZ = (40.0, 150.0)
 # Below this share of the full-band level the low band is leakage, not a
 # kick or bass line (real dance tracks sit at 0.75-0.9).
 MIN_LOW_SHARE = 0.1
+# Bar positions: a bar of 3 or 5 beats costs this much evidence (one bar of
+# detected downbeats on the new phase scores 2), a bar of 2 or 6 beats
+# twice that. beat-this flips to the half bar in breakdowns, so a half-bar
+# shift needs 8 bars of evidence and a one-beat shift 4.
+ODD_BAR_COST = 8.0
+HALF_BAR_COST = 16.0
+# Mix-out: phrases of this many bars, counted from the mix-in bar.
+PHRASE_BARS = 8
+# The mix-out point leaves at least this many bars until the end of the
+# track, so a fade of a few bars fits after it; an outro shorter than this
+# is no outro (the mix starts at the last phrase boundary that leaves it).
+MIX_OUT_MIN_BARS = 8
+# A bar is quiet (outro-like) when its full-band level is below this share
+# of the median level of the bars with a kick.
+OUTRO_QUIET_FRACTION = 0.7
+# A mix-out point earlier than this share of the track is not one.
+MIX_OUT_MIN_SHARE = 0.5
 
 
 def beat_period(beats: np.ndarray) -> float | None:
@@ -187,6 +209,51 @@ class Bars:
     phase: int  # beats[i] is a downbeat when i % 4 == phase
     downbeat_indices: list[int]  # detected downbeats that agree with phase
     consistency: float  # share of detected downbeats on `phase`, 0..1
+    # Index of every bar's downbeat, ascending. Mostly `i % 4 == phase`,
+    # but a bar of 3 or 5 beats inside a run moves the later ones.
+    bar_starts: list[int] = field(default_factory=list)
+
+
+def bar_positions(n: int, detected: list[int], phase: int = 0) -> list[int]:
+    """Downbeat index of every bar of an n-beat grid.
+
+    Viterbi over the position in the bar (0-3) of every beat: the position
+    advances by one per beat; a bar may end early (3 beats: ODD_BAR_COST,
+    2 beats: HALF_BAR_COST) or run long (5 beats, ODD_BAR_COST per extra
+    beat). A beat with a detected downbeat scores +1 on position 0 and -1
+    elsewhere. So a lone wrong downbeat changes nothing, while a few bars
+    in a row on a new phase move every later bar by one beat. With no
+    detected downbeats at all the bars follow `phase`."""
+    if n <= 0:
+        return []
+    if not detected:
+        return list(range(phase % 4, n, 4))
+    neg = -1e9
+    trans = np.full((4, 4), neg)  # trans[from, to]
+    for p in range(4):
+        trans[p, (p + 1) % 4] = 0.0
+    trans[2, 0] = -ODD_BAR_COST  # 3-beat bar
+    trans[1, 0] = -HALF_BAR_COST  # 2-beat bar
+    trans[3, 3] = -ODD_BAR_COST  # one more beat: 5-beat bar
+    emit = np.zeros((n, 4))
+    for i in detected:
+        if 0 <= i < n:
+            emit[i, :] = -1.0
+            emit[i, 0] = 1.0
+    score = emit[0].copy()
+    back = np.zeros((n, 4), dtype=np.int8)
+    for i in range(1, n):
+        total = score[:, None] + trans
+        back[i] = np.argmax(total, axis=0)
+        score = total[back[i], np.arange(4)] + emit[i]
+    pos = int(np.argmax(score))
+    starts: list[int] = []
+    for i in range(n - 1, -1, -1):
+        if pos == 0:
+            starts.append(i)
+        pos = int(back[i][pos])
+    starts.reverse()
+    return starts
 
 
 def assign_bars(grid: Grid, downbeats: np.ndarray, period: float) -> Bars:
@@ -197,7 +264,7 @@ def assign_bars(grid: Grid, downbeats: np.ndarray, period: float) -> Bars:
     1-3 beats, so `i % 4 == phase` holds across the break."""
     beats, real = grid.beats, grid.real
     if beats.size == 0:
-        return Bars(beats, real, 0, [], 0.0)
+        return Bars(beats, real, 0, [], 0.0, [])
     near = nearest(beats, downbeats, 0.3 * period)
     starts = list(grid.run_starts) + [int(beats.size)]
     keep = np.ones(beats.size, dtype=bool)
@@ -224,9 +291,11 @@ def assign_bars(grid: Grid, downbeats: np.ndarray, period: float) -> Bars:
     on_phase = sorted(
         {int(new_index[i]) for i in near if i >= 0 and keep[i] and new_index[i] % 4 == target}
     )
-    detected = sum(1 for i in near if i >= 0)
-    consistency = len(on_phase) / detected if detected else 0.0
-    return Bars(kept_beats, kept_real, target, on_phase, consistency)
+    detected = sorted({int(new_index[i]) for i in near if i >= 0 and keep[i]})
+    n_detected = sum(1 for i in near if i >= 0)
+    consistency = len(on_phase) / n_detected if n_detected else 0.0
+    starts = bar_positions(int(kept_beats.size), detected, target)
+    return Bars(kept_beats, kept_real, target, on_phase, consistency, starts)
 
 
 def low_band_envelope(
@@ -256,7 +325,53 @@ def low_band_envelope(
     return env, full, sr / hop
 
 
-def mix_in_index(bars: Bars, pcm: np.ndarray, sr: int, duration: float) -> int:
+@dataclass
+class Levels:
+    """Per-beat kick/bass-band and full-band levels of one track."""
+
+    low: np.ndarray  # peak 40-150 Hz magnitude around each beat
+    full: np.ndarray  # peak full-band magnitude around each beat
+    ref: float  # MIX_IN_PERCENTILE of `low`: the track's loud kick level
+    has_low: bool  # False when the low band is only leakage (no kick/bass)
+
+
+def beat_levels(beats: np.ndarray, pcm: np.ndarray, sr: int) -> Levels | None:
+    if beats.size == 0:
+        return None
+    env, full, rate = low_band_envelope(pcm, sr)
+    if env.size == 0:
+        return None
+    has_low = bool(
+        np.percentile(env, MIX_IN_PERCENTILE) >= MIN_LOW_SHARE * np.percentile(full, MIX_IN_PERCENTILE)
+    )
+    lo = np.clip(((beats - 0.05) * rate).astype(int), 0, env.size - 1)
+    hi = np.clip(((beats + 0.08) * rate).astype(int) + 1, 1, env.size)
+    low = np.array([float(env[a:b].max()) if b > a else 0.0 for a, b in zip(lo, hi)])
+    fb = np.array([float(full[a:b].max()) if b > a else 0.0 for a, b in zip(lo, hi)])
+    return Levels(low, fb, float(np.percentile(low, MIX_IN_PERCENTILE)), has_low)
+
+
+def bar_spans(bars: Bars) -> list[tuple[int, int]]:
+    """(first beat, end beat) of every bar of at least 2 beats; the last
+    bar runs to the end of the grid, at most 4 beats."""
+    starts = bars.bar_starts
+    n = int(bars.beats.size)
+    spans = []
+    for k, s in enumerate(starts):
+        e = starts[k + 1] if k + 1 < len(starts) else min(n, s + 4)
+        if e - s >= 2:
+            spans.append((s, e))
+    return spans
+
+
+def _bar_strength(levels: Levels, a: int, b: int) -> float:
+    """Second-loudest kick of the bar, so one lone hit is not a groove."""
+    return float(np.sort(levels.low[a:b])[-2])
+
+
+def mix_in_index(
+    bars: Bars, pcm: np.ndarray, sr: int, duration: float, levels: Levels | None = None
+) -> int:
     """Index of the mix-in beat: the first downbeat from which the kick/bass
     band holds for MIX_IN_RUN beats, most of them detected (not filled).
 
@@ -266,16 +381,8 @@ def mix_in_index(bars: Bars, pcm: np.ndarray, sr: int, duration: float) -> int:
     beats = bars.beats
     if beats.size < MIX_IN_RUN:
         return -1
-    env, full, rate = low_band_envelope(pcm, sr)
-    if env.size == 0:
-        return -1
-    if np.percentile(env, MIX_IN_PERCENTILE) < MIN_LOW_SHARE * np.percentile(full, MIX_IN_PERCENTILE):
-        return -1  # no kick or bass anywhere
-    lo = np.clip(((beats - 0.05) * rate).astype(int), 0, env.size - 1)
-    hi = np.clip(((beats + 0.08) * rate).astype(int) + 1, 1, env.size)
-    per_beat = np.array([float(env[a:b].max()) if b > a else 0.0 for a, b in zip(lo, hi)])
-    ref = float(np.percentile(per_beat, MIX_IN_PERCENTILE))
-    if ref <= 0:
+    levels = levels or beat_levels(beats, pcm, sr)
+    if levels is None or not levels.has_low or levels.ref <= 0:
         return -1
     # Judge whole bars, not single beats: half-time and broken beats have
     # no kick on some beats, and a lone hit per bar is not a groove yet. A
@@ -284,21 +391,87 @@ def mix_in_index(bars: Bars, pcm: np.ndarray, sr: int, duration: float) -> int:
     # a row.
     bars_needed = MIX_IN_RUN // 4
     need_real = MIX_IN_RUN - 2
-    starts = list(range(bars.phase, beats.size - 3, 4))
-    strong = [
-        float(np.sort(per_beat[s : s + 4])[-2]) >= MIX_IN_FRACTION * ref
-        for s in starts
-    ]
-    for k in range(len(starts) - bars_needed + 1):
+    spans = [sp for sp in bar_spans(bars) if sp[1] - sp[0] >= 2]
+    strong = [_bar_strength(levels, a, b) >= MIX_IN_FRACTION * levels.ref for a, b in spans]
+    for k in range(len(spans) - bars_needed + 1):
         if not all(strong[k : k + bars_needed]):
             continue
-        s = starts[k]
-        if int(bars.real[s : s + 4 * bars_needed].sum()) < need_real:
+        s = spans[k][0]
+        e = spans[k + bars_needed - 1][1]
+        if int(bars.real[s:e].sum()) < need_real * (e - s) / MIX_IN_RUN:
             continue
         if duration > 0 and beats[s] > MIX_IN_MAX_SHARE * duration:
             return -1
         return int(s)
     return -1
+
+
+def mix_out_index(
+    bars: Bars,
+    pcm: np.ndarray,
+    sr: int,
+    duration: float,
+    mix_in: int = -1,
+    levels: Levels | None = None,
+) -> int:
+    """Index of the mix-out beat: the downbeat where the next track should
+    come in, on a phrase boundary (PHRASE_BARS bars counted from the
+    mix-in bar, or from the first bar without one), so the incoming
+    track's mix-in phrase lands on a phrase of this one.
+
+    The outro starts at the first bar from which every bar to the end has
+    lost its kick (two bars in a row without one; a half-time kick still
+    counts) or dropped well below the track's level. With an outro of at
+    least MIX_OUT_MIN_BARS, the mix-out is the last phrase boundary at or
+    before it; without one (the groove runs to the end, or stops a few
+    bars before it), the last phrase boundary that leaves MIX_OUT_MIN_BARS
+    until the end. -1 when there is no kick at all, or when the point
+    would land before MIX_OUT_MIN_SHARE of the track."""
+    beats = bars.beats
+    spans = bar_spans(bars)
+    if len(spans) < PHRASE_BARS or duration <= 0:
+        return -1
+    levels = levels or beat_levels(beats, pcm, sr)
+    if levels is None or not levels.has_low or levels.ref <= 0:
+        return -1
+    period = beat_period(beats)
+    if period is None:
+        return -1
+    bar_sec = 4 * period
+    strong = np.array([_bar_strength(levels, a, b) >= MIX_IN_FRACTION * levels.ref for a, b in spans])
+    if not strong.any():
+        return -1
+    groove = strong.copy()
+    groove[1:] |= strong[:-1]  # a weak bar right after a strong one (half-time)
+    full = np.array([float(levels.full[a:b].mean()) for a, b in spans])
+    quiet = full < OUTRO_QUIET_FRACTION * float(np.median(full[strong]))
+    outro_like = ~groove | quiet
+    outro = len(spans)
+    while outro > 0 and outro_like[outro - 1]:
+        outro -= 1
+    starts = [a for a, _ in spans]
+    anchor = starts.index(mix_in) if mix_in in starts else 0
+    if anchor >= len(spans):
+        return -1
+
+    def left(k: int) -> float:
+        return duration - float(beats[starts[k]])
+
+    if outro < len(spans) and left(outro) >= MIX_OUT_MIN_BARS * bar_sec:
+        cands = list(range(anchor, outro + 1, PHRASE_BARS))
+    else:
+        cands = [
+            k for k in range(anchor, len(spans), PHRASE_BARS)
+            if left(k) >= MIX_OUT_MIN_BARS * bar_sec
+        ]
+    if not cands:
+        return -1
+    k = cands[-1]
+    if k <= anchor and mix_in >= 0:
+        return -1  # the whole track is one phrase: no point
+    if float(beats[starts[k]]) < MIX_OUT_MIN_SHARE * duration:
+        return -1
+    return int(starts[k])
 
 
 def confidence(bars: Bars, period: float) -> float:
@@ -326,6 +499,8 @@ class Analysis:
     confidence: float
     first_solid_beat: int
     stats: dict
+    bar_starts: list[int] = field(default_factory=list)
+    mix_out_beat: int = -1
 
 
 def analyse(raw_beats, raw_downbeats, pcm: np.ndarray, sr: int, duration: float) -> Analysis:
@@ -338,7 +513,10 @@ def analyse(raw_beats, raw_downbeats, pcm: np.ndarray, sr: int, duration: float)
     grid = regularize(raw, period)
     bars = assign_bars(grid, downs, period)
     period = beat_period(bars.beats) or period
-    first_solid = mix_in_index(bars, pcm, sr, duration)
+    levels = beat_levels(bars.beats, pcm, sr)
+    first_solid = mix_in_index(bars, pcm, sr, duration, levels)
+    mix_out = mix_out_index(bars, pcm, sr, duration, first_solid, levels)
+    odd_bars = sum(1 for a, b in zip(bars.bar_starts, bars.bar_starts[1:]) if b - a != 4)
     return Analysis(
         beats=[round(float(b), 4) for b in bars.beats],
         downbeat_indices=bars.downbeat_indices,
@@ -352,5 +530,8 @@ def analyse(raw_beats, raw_downbeats, pcm: np.ndarray, sr: int, duration: float)
             "filled": grid.filled,
             "breaks": len(grid.run_starts) - 1,
             "bar_consistency": round(bars.consistency, 3),
+            "odd_bars": odd_bars,
         },
+        bar_starts=bars.bar_starts,
+        mix_out_beat=mix_out,
     )

@@ -58,12 +58,14 @@ Response:
   "beats": [0.51, 0.98, 1.45],
   "downbeatIndices": [0, 4, 8],
   "downbeatPhase": 0,
+  "barStarts": [0, 4, 8],
   "bpm": 124.0,
   "confidence": 0.9,
   "duration": 212.3,
   "firstSolidBeat": 16,
-  "analyzerVersion": 2,
-  "stats": { "raw_beats": 431, "extra_dropped": 7, "filled": 0, "breaks": 0, "bar_consistency": 0.97 }
+  "mixOutBeat": 400,
+  "analyzerVersion": 3,
+  "stats": { "raw_beats": 431, "extra_dropped": 7, "filled": 0, "breaks": 0, "bar_consistency": 0.97, "odd_bars": 0 }
 }
 ```
 
@@ -73,6 +75,11 @@ Response:
   for the whole track.
 - `downbeatIndices` — the detected downbeats that agree with that phase
   (indices into `beats`), so `downbeatIndices[0] % 4 == downbeatPhase`.
+- `barStarts` — the downbeat of every bar (indices into `beats`,
+  ascending). Mostly every 4th beat from `downbeatPhase`, but a bar of 3 or
+  5 beats inside the track (an edit, a skipped beat) moves the later bars,
+  so count bars with this, not with `i % 4`. A short flip of beat-this's
+  downbeats to the half bar (breakdowns) is not followed.
 - `bpm` — from the steady beat intervals (not quantised to the model's
   50 fps frames).
 - `firstSolidBeat` — the **mix-in point**: index of the first downbeat from
@@ -80,13 +87,23 @@ Response:
   `-1` when there is no such point in the first 40 % of the track (drumless
   or slow-building tracks), when the track is too short, or when there are
   no beats.
+- `mixOutBeat` — the **mix-out point**: index of the downbeat where the next
+  track should come in. It sits on a phrase boundary (8 bars, counted from
+  the mix-in point or the first bar), so the next track's mix-in phrase
+  lands on a phrase of this one: the last boundary at or before the outro
+  (the bars at the end where the kick is gone or the level drops well
+  below the track's), or, without an outro of at least 8 bars, the last
+  boundary that leaves 8 bars until the end. `-1` when there is no kick at
+  all, when the track is too short, or when the point would land in the
+  first half.
 - `confidence` — 0..1, share of detected (not interpolated) beats times how
   steady the grid is. beat-this has no score of its own.
 - `duration` — decoded length in seconds.
 - `analyzerVersion` — bumps whenever the grid changes meaningfully, so a
   caller can re-grid tracks analysed by an older version.
 - `stats` — diagnostics: raw beat count, extra beats dropped, beats filled,
-  breaks in the grid, share of detected downbeats on the chosen phase.
+  breaks in the grid, share of detected downbeats on the chosen phase,
+  bars that are not 4 beats long.
 
 Both endpoints return the same response. An empty `beats` array means "no
 pulse" (also for audio under one second). On failure: a non-2xx status
@@ -106,7 +123,7 @@ with `{ "error": "<message>" }`:
 ```json
 {
   "status": "ok", "model_loaded": true, "checkpoint": "final0",
-  "analyzerVersion": 2, "busy": false, "waiting": 0,
+  "analyzerVersion": 3, "busy": false, "waiting": 0,
   "analysed": 12, "failed": 0, "last_error": null
 }
 ```
@@ -142,8 +159,13 @@ falls off the grid at the first one. `grid.py` therefore:
 2. picks one bar phase for the whole track from the majority of beat-this's
    downbeats, dropping up to 3 beats after a break in the grid so the
    phase holds across it;
-3. finds the mix-in point from the 40–150 Hz band, judged per bar so
-   half-time and broken beats count.
+3. places the downbeat of every bar (Viterbi over the position in the bar,
+   so a few bars of downbeats on a new phase move the later bars, while a
+   stray downbeat or a short half-bar flip doesn't);
+4. finds the mix-in point from the 40–150 Hz band, judged per bar so
+   half-time and broken beats count;
+5. finds the mix-out point: the phrase boundary where the outro starts, or
+   the last one that leaves room for a mix.
 
 Every analysis logs one line with timings and these stats.
 

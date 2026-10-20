@@ -1,11 +1,15 @@
 # Open work
 
-- Deploy analyzer v2 (clean grid, bar phase, kick-based mix-in, 503 for transient failures):
-  `scripts/deploy.sh` after the PR is merged. Then pass-the-aux must bump
-  `BEATTHIS_ANALYZER_VERSION` to 5 so existing tracks are re-gridded.
-- Tune the mix-in point on a bigger library: checked against level profiles of 7 tracks, not by ear
-  (`grid.py` constants `MIX_IN_*`). Rusty Nails gets 82.7 s (slow build), Eating Hooks gets -1.
-- Odd bars (a 2/4 bar inside a 4/4 track) still flip the bar phase for the rest of the track,
-  because pass-the-aux models bars as `i % 4`. Real fix is aux-side: use `downbeatIndices`
-  per bar instead of one phase.
+- Deploy analyzer v3 (v2's clean grid, bar phase, kick-based mix-in and 503s, plus per-bar
+  downbeats `barStarts` and the mix-out point `mixOutBeat`): `scripts/deploy.sh` after the PR is
+  merged, **before** pass-the-aux's PR that bumps `BEATTHIS_ANALYZER_VERSION` to 5 (it re-grids
+  every track and stores both new fields).
+- Tune the mix-in and mix-out points on a bigger library: checked against level profiles of 7
+  album tracks, not by ear (`grid.py` constants `MIX_IN_*`, `MIX_OUT_*`, `OUTRO_QUIET_FRACTION`).
+  Rusty Nails gets mix-in 82.7 s (slow build), Eating Hooks -1; mix-outs leave 8–13 bars, A New
+  Error 33 (55 s beatless outro). None of the 7 has a long DJ outro with the kick still running
+  (only the full-band drop would catch that).
+- Odd-bar costs (`ODD_BAR_COST`, `HALF_BAR_COST`) are tuned so none of the 7 local tracks gets an
+  odd bar except one 3-beat bar in Wildfire's outro; Zdarlight's half-bar flips in breakdowns are
+  treated as tracker noise. Check on a track with a real edit.
 - Half/double tempo is left to beat-this (pass-the-aux octave-matches tempos when syncing).

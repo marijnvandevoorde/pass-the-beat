@@ -20,14 +20,16 @@ def steady(start=0.25, end=60.0, period=P):
     return np.arange(start, end, period)
 
 
-def pcm_with(kick_from: float | None, total: float, pad: bool = True) -> np.ndarray:
+def pcm_with(
+    kick_from: float | None, total: float, pad: bool = True, kick_until: float | None = None
+) -> np.ndarray:
     """A loud 440 Hz pad all along, plus 60 Hz kicks on every beat from
-    `kick_from` seconds (None = never)."""
+    `kick_from` seconds (None = never) until `kick_until` (None = the end)."""
     t = np.arange(int(total * SR)) / SR
     x = 0.3 * np.sin(2 * np.pi * 440 * t) if pad else np.zeros_like(t)
     if kick_from is not None:
         for b in steady(0.25, total, P):
-            if b < kick_from:
+            if b < kick_from or (kick_until is not None and b >= kick_until):
                 continue
             i0 = int(b * SR)
             n = int(0.12 * SR)
@@ -126,6 +128,39 @@ class AssignBars(unittest.TestCase):
         self.assertEqual(bars.downbeat_indices, [])
 
 
+class BarPositions(unittest.TestCase):
+    def test_regular_bars(self):
+        self.assertEqual(grid.bar_positions(40, list(range(1, 40, 4))), list(range(1, 40, 4)))
+
+    def test_no_downbeats_follow_the_phase(self):
+        self.assertEqual(grid.bar_positions(12, [], 2), [2, 6, 10])
+
+    def test_a_lone_wrong_downbeat_changes_nothing(self):
+        det = list(range(0, 80, 4)) + [42]
+        self.assertEqual(grid.bar_positions(80, sorted(det)), list(range(0, 80, 4)))
+
+    def test_a_three_beat_bar_moves_the_later_bars(self):
+        # Bars of 4 up to beat 40, one bar of 3 beats, then 4 again: every
+        # later downbeat sits one beat earlier than "every 4th beat".
+        det = list(range(0, 41, 4)) + list(range(43, 100, 4))
+        starts = grid.bar_positions(100, det)
+        self.assertEqual(starts, det)
+        lengths = np.diff(starts)
+        self.assertEqual(int((lengths == 3).sum()), 1)
+
+    def test_a_short_half_bar_flip_is_not_followed(self):
+        # beat-this jumps to the half bar for 4 bars in a breakdown, then
+        # comes back: that is the tracker, not the music.
+        det = list(range(0, 40, 4)) + list(range(42, 58, 4)) + list(range(60, 120, 4))
+        self.assertEqual(grid.bar_positions(120, det), list(range(0, 120, 4)))
+
+    def test_assign_bars_returns_bar_starts(self):
+        b = steady()
+        g = grid.regularize(b, P)
+        bars = grid.assign_bars(g, b[1::4], P)
+        self.assertEqual(bars.bar_starts, list(range(1, b.size, 4)))
+
+
 class MixIn(unittest.TestCase):
     def bars_for(self, total, phase=0):
         b = steady(0.25, total)
@@ -163,6 +198,67 @@ class MixIn(unittest.TestCase):
         self.assertEqual(grid.mix_in_index(bars, pcm_with(0.0, 2), SR, 2), -1)
 
 
+class MixOut(unittest.TestCase):
+    TOTAL = 120.0  # 240 beats, 60 bars of 2 s
+
+    def bars_for(self, phase=0):
+        b = steady(0.25, self.TOTAL)
+        g = grid.regularize(b, P)
+        return grid.assign_bars(g, b[phase::4], P)
+
+    def mix_out(self, pcm, mix_in=-1, phase=0):
+        bars = self.bars_for(phase)
+        return bars, grid.mix_out_index(bars, pcm, SR, self.TOTAL, mix_in)
+
+    def test_on_the_phrase_where_the_outro_starts(self):
+        # Kick until 96.25 s (bar 48 = phrase 6): a 12-bar outro.
+        bars, idx = self.mix_out(pcm_with(0.0, self.TOTAL, kick_until=96.25), mix_in=0)
+        self.assertEqual(idx, 48 * 4)
+        self.assertAlmostEqual(bars.beats[idx], 96.25)
+
+    def test_outro_off_the_phrase_mixes_at_the_phrase_before(self):
+        # Kick stops at bar 51: mix out at bar 48, three bars before.
+        bars, idx = self.mix_out(pcm_with(0.0, self.TOTAL, kick_until=102.25), mix_in=0)
+        self.assertEqual(idx, 48 * 4)
+
+    def test_phrases_count_from_the_mix_in(self):
+        # Mix-in on bar 2 (4.25 s): phrases start on bars 2, 10, ..., 42, 50.
+        # The kick stops at bar 49, so the mix-out is bar 42 (not 48).
+        pcm = pcm_with(4.0, self.TOTAL, kick_until=98.25)
+        bars, idx = self.mix_out(pcm, mix_in=8)
+        self.assertEqual(idx, 42 * 4)
+        self.assertEqual((idx - 8) % (4 * grid.PHRASE_BARS), 0)
+
+    def test_groove_to_the_end_takes_the_last_phrase_with_room(self):
+        # No outro: the last phrase boundary leaving 8 bars is bar 48.
+        bars, idx = self.mix_out(pcm_with(0.0, self.TOTAL), mix_in=0)
+        self.assertEqual(idx, 48 * 4)
+        self.assertGreaterEqual(self.TOTAL - bars.beats[idx], grid.MIX_OUT_MIN_BARS * 4 * P)
+
+    def test_short_outro_is_no_outro(self):
+        # 4 bars of outro: too short to mix in, take the last phrase with room.
+        bars, idx = self.mix_out(pcm_with(0.0, self.TOTAL, kick_until=112.25), mix_in=0)
+        self.assertEqual(idx, 48 * 4)
+
+    def test_on_a_downbeat(self):
+        bars, idx = self.mix_out(pcm_with(0.0, self.TOTAL, kick_until=96.25), phase=2)
+        self.assertIn(idx, bars.bar_starts)
+        self.assertEqual(idx % 4, 2)
+
+    def test_no_kick_at_all(self):
+        _, idx = self.mix_out(pcm_with(None, self.TOTAL))
+        self.assertEqual(idx, -1)
+
+    def test_outro_in_the_first_half_is_not_a_mix_out(self):
+        _, idx = self.mix_out(pcm_with(0.0, self.TOTAL, kick_until=40.25), mix_in=0)
+        self.assertEqual(idx, -1)
+
+    def test_short_track(self):
+        b = steady(0.25, 10)
+        bars = grid.assign_bars(grid.regularize(b, P), b[0::4], P)
+        self.assertEqual(grid.mix_out_index(bars, pcm_with(0.0, 10), SR, 10), -1)
+
+
 class Analyse(unittest.TestCase):
     def test_end_to_end_on_messy_beats(self):
         b = steady(0.25, 60)
@@ -177,12 +273,16 @@ class Analyse(unittest.TestCase):
         self.assertEqual(a.first_solid_beat % 4, 1)
         self.assertGreater(a.confidence, 0.8)
         self.assertEqual(a.stats["extra_dropped"], rolls.size)
+        self.assertEqual(a.bar_starts, list(range(1, b.size, 4)))
+        self.assertEqual(a.stats["odd_bars"], 0)
 
     def test_no_beats(self):
         a = grid.analyse([], [], np.zeros(SR, dtype=np.float32), SR, 1.0)
         self.assertEqual(a.beats, [])
         self.assertIsNone(a.bpm)
         self.assertEqual(a.first_solid_beat, -1)
+        self.assertEqual(a.bar_starts, [])
+        self.assertEqual(a.mix_out_beat, -1)
 
 
 if __name__ == "__main__":

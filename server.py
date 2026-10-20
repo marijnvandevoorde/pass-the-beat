@@ -172,8 +172,9 @@ def _is_out_of_memory(e: BaseException) -> bool:
 def _empty(duration: float) -> dict:
     """No trackable pulse — mirrors the local analyzer's null contract."""
     return {
-        "beats": [], "downbeatIndices": [], "downbeatPhase": 0, "bpm": None,
-        "confidence": 0.0, "duration": round(duration, 3), "firstSolidBeat": -1,
+        "beats": [], "downbeatIndices": [], "downbeatPhase": 0, "barStarts": [],
+        "bpm": None, "confidence": 0.0, "duration": round(duration, 3),
+        "firstSolidBeat": -1, "mixOutBeat": -1,
         "analyzerVersion": grid.ANALYZER_VERSION, "stats": {"raw_beats": 0},
     }
 
@@ -183,11 +184,13 @@ def _raw_result(beats: list[float], downbeats: list[float], duration: float) -> 
     b = np.asarray(beats)
     period = grid.beat_period(b)
     idx = sorted({i for i in grid.nearest(b, np.asarray(downbeats), 0.1) if i >= 0})
+    phase = (idx[0] % 4) if idx else 0
     return {
-        "beats": beats, "downbeatIndices": idx,
-        "downbeatPhase": (idx[0] % 4) if idx else 0,
+        "beats": beats, "downbeatIndices": idx, "downbeatPhase": phase,
+        "barStarts": list(range(phase, len(beats), 4)),
         "bpm": round(60.0 / period, 2) if period else None,
         "confidence": 0.1, "duration": round(duration, 3), "firstSolidBeat": -1,
+        "mixOutBeat": -1,
         "analyzerVersion": 1, "stats": {"raw_beats": len(beats), "fallback": True},
     }
 
@@ -242,10 +245,12 @@ def _analyze_locked(full: str, label: str) -> dict:
                 "beats": a.beats,
                 "downbeatIndices": a.downbeat_indices,
                 "downbeatPhase": a.downbeat_phase,
+                "barStarts": a.bar_starts,
                 "bpm": a.bpm,
                 "confidence": a.confidence,
                 "duration": round(duration, 3),
                 "firstSolidBeat": a.first_solid_beat,
+                "mixOutBeat": a.mix_out_beat,
                 "analyzerVersion": grid.ANALYZER_VERSION,
                 "stats": a.stats,
             }
@@ -256,10 +261,10 @@ def _analyze_locked(full: str, label: str) -> dict:
     t3 = time.monotonic()
     log.info(
         "%s: %.0fs audio, decode %.1fs, model %.1fs, grid %.2fs; %d beats, "
-        "bpm %s, phase %d, mix-in beat %d, confidence %.2f, %s",
+        "bpm %s, phase %d, mix-in beat %d, mix-out beat %d, confidence %.2f, %s",
         label, duration, t1 - t0, t2 - t1, t3 - t2, len(result["beats"]),
         result["bpm"], result["downbeatPhase"], result["firstSolidBeat"],
-        result["confidence"], result["stats"],
+        result["mixOutBeat"], result["confidence"], result["stats"],
     )
     return result
 

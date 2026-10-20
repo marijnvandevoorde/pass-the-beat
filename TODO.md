@@ -1,9 +1,5 @@
 # Open work
 
-- Deploy analyzer v3 (v2's clean grid, bar phase, kick-based mix-in and 503s, plus per-bar
-  downbeats `barStarts` and the mix-out point `mixOutBeat`): `scripts/deploy.sh` after the PR is
-  merged, **before** pass-the-aux's PR that bumps `BEATTHIS_ANALYZER_VERSION` to 5 (it re-grids
-  every track and stores both new fields).
 - Tune the mix-in and mix-out points on a bigger library: checked against level profiles of 7
   album tracks, not by ear (`grid.py` constants `MIX_IN_*`, `MIX_OUT_*`, `OUTRO_QUIET_FRACTION`).
   Rusty Nails gets mix-in 82.7 s (slow build), Eating Hooks -1; mix-outs leave 8–13 bars, A New

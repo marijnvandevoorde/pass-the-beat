@@ -22,25 +22,44 @@ a plain HTTP contract.
   file, analysed, deleted. Same response as `/analyze`.
 - `POST /analyze` — body `{ "path": "<uid>/song.mp3" }`, a path relative
   to the read-only `/music` mount. Returns
-  `{ beats[], downbeatIndices[], bpm, confidence, duration, firstSolidBeat }`.
-  `beats` are second offsets; `downbeatIndices` index into `beats`;
-  `firstSolidBeat` is a beat index (or -1). On failure: non-2xx +
-  `{ error }`: 422 undecodable audio (permanent for that file), 503
-  model still loading, 500 model failure. pass-the-aux stores a 422 as
-  "analysed, no grid" so it is not retried; 503 / unreachable means "try
-  again later".
+  `{ beats[], downbeatIndices[], downbeatPhase, bpm, confidence, duration,
+  firstSolidBeat, analyzerVersion, stats }`. `beats` are second offsets of
+  the cleaned grid; `downbeatIndices` index into `beats` and all sit on
+  `downbeatPhase` (`i % 4`); `firstSolidBeat` is the mix-in beat index (a
+  downbeat) or -1. The README documents every field.
+- Status codes: 200 grid (empty = no pulse); 400/404/413 bad request; 422
+  undecodable (permanent for that file); 500 the model failed on this
+  input; 503 try again later (loading, queue full, out of memory, ffmpeg
+  missing, any unhandled error). pass-the-aux stores 400–500 (except
+  404/408/429) as "analysed, no grid" and never retries them, so anything
+  that is not a property of the file **must** be 503.
+- Additive fields only. When the grid output changes meaningfully, bump
+  `grid.ANALYZER_VERSION`; pass-the-aux only re-grids tracks when its own
+  `BEATTHIS_ANALYZER_VERSION` is bumped, so tell its maintainer.
 - `GET /healthz` — `{ status, model_loaded, checkpoint }`.
 
 The Node adapter collapses `downbeatIndices` to the existing 4/4
-`downbeatPhase` (`downbeatIndices[0] % 4`) — no DB schema change. The
-explicit per-beat downbeat array is a future enhancement.
+`downbeatPhase` (`downbeatIndices[0] % 4`, which equals our
+`downbeatPhase` since analyzer v2) — no DB schema change.
+
+## Grid post-processing (`grid.py`)
+
+Pure numpy, unit-tested without torch. Raw beat-this output (no DBN) has
+extra half/third beats in rolls and holes in sparse parts; pass-the-aux
+snaps to the nearest beat and counts bars as `i % 4`, so the raw output
+made fades land off-beat. `regularize` keeps the best steady chain and
+fills whole-beat holes, `assign_bars` picks one bar phase (dropping up to
+3 beats after a break), `mix_in_index` finds the first downbeat with two
+bars of kick/bass at the track's main level. Tuning constants sit at the
+top of the file; check changes against real tracks, not only the
+synthetic tests.
 
 ## Model lifecycle
 
 The checkpoint (`final0`) is baked into the image at build time and the
 `Audio2Beats` model is loaded once in the FastAPI lifespan — loading is
-the expensive part, so it is reused for every request. Requests are
-effectively serialized by the single in-process model.
+the expensive part, so it is reused for every request. A lock runs one
+analysis at a time; `MAX_QUEUE` more may wait, the rest get 503.
 
 The service decodes audio itself with the **ffmpeg binary** and feeds
 beat-this a raw waveform (`Audio2Beats`, not `File2Beats`) — beat-this's
@@ -77,9 +96,11 @@ curl http://localhost:8000/healthz
 
 | Path | Role |
 |---|---|
-| `server.py` | FastAPI app — model lifespan + `/analyze` + `/healthz` |
-| `Dockerfile` | python:3.11-slim + ffmpeg + torch CPU + beat_this |
+| `server.py` | FastAPI app — model lifespan, endpoints, status codes, logging |
+| `grid.py` | Grid post-processing (clean grid, bar phase, mix-in) |
+| `tests/` | `python -m unittest discover tests` (fake model) + `tests/smoke.py` (real model) |
+| `Dockerfile` | python:3.14-slim + ffmpeg + torch CPU + beat_this |
 | `compose.yml` | Standalone single-service deploy (pass-the-aux's stack defines its own) |
 | `.env.example` | Standalone overrides (`MUSIC_DIR` only for `/analyze`) |
-| `requirements.txt` | fastapi, uvicorn, numpy, beat_this (git) |
+| `requirements.txt` | fastapi, uvicorn, numpy, beat_this (git, pinned commit) |
 | `.dockerignore` | keeps build context lean |

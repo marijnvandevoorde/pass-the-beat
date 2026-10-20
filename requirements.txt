@@ -3,4 +3,5 @@ uvicorn[standard]==0.54.0
 numpy>=2.5.4,<2.6
 # torch / torchaudio are installed separately from the CPU wheel index
 # in the Dockerfile (the default index pulls the multi-GB CUDA build).
-beat_this @ git+https://github.com/CPJKU/beat_this.git
+# Pinned to a commit: a newer model or post-processing changes every grid.
+beat_this @ git+https://github.com/CPJKU/beat_this.git@b95c8ab0c58c2d9fcfd40508ae8dffbc05ac4f5c

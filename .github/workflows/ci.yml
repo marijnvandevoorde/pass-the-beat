@@ -1,8 +1,9 @@
 name: CI
 
 # Cheap checks so Dependabot updates get tested before they auto-merge:
-# install the CPU torch build + requirements.txt, then boot the app (loads the
-# beat-this model) and analyse a generated click track (tests/smoke.py).
+# install the CPU torch build + requirements.txt, run the unit tests (grid
+# post-processing and the HTTP contract with a fake model), then boot the app
+# (loads the beat-this model) and analyse a generated click track (tests/smoke.py).
 # The docker image is not built here: that stays manual (docker-publish.yml).
 on:
   pull_request:
@@ -38,7 +39,10 @@ jobs:
           pip install -r requirements.txt httpx2
 
       - name: Compile
-        run: python -m compileall -q server.py tests
+        run: python -m compileall -q server.py grid.py tests
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py'
 
       - name: Smoke test
         run: python tests/smoke.py

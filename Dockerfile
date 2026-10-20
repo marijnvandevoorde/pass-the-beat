@@ -1,6 +1,6 @@
 FROM python:3.14-slim
 
-# ffmpeg: used for the duration probe and the first-solid energy decode.
+# ffmpeg: decodes every upload to PCM for the model and the mix-in analysis.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py .
+COPY server.py grid.py ./
 
 # Bake the checkpoint into the image so a cold container starts (and
 # runs offline) without a first-request download.

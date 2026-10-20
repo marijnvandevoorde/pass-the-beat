@@ -57,26 +57,58 @@ Response:
 {
   "beats": [0.51, 0.98, 1.45],
   "downbeatIndices": [0, 4, 8],
+  "downbeatPhase": 0,
   "bpm": 124.0,
   "confidence": 0.9,
   "duration": 212.3,
-  "firstSolidBeat": 16
+  "firstSolidBeat": 16,
+  "analyzerVersion": 2,
+  "stats": { "raw_beats": 431, "extra_dropped": 7, "filled": 0, "breaks": 0, "bar_consistency": 0.97 }
 }
 ```
 
-- `beats` — beat times, in seconds.
-- `downbeatIndices` — indices into `beats` that fall on a downbeat.
-- `firstSolidBeat` — index of the first reliable beat, or `-1`.
+- `beats` — a cleaned beat grid, in seconds (see *How the grid is built*).
+  Holes of a whole number of beats are filled with interpolated beats.
+- `downbeatPhase` — `beats[i]` starts a bar when `i % 4 == downbeatPhase`,
+  for the whole track.
+- `downbeatIndices` — the detected downbeats that agree with that phase
+  (indices into `beats`), so `downbeatIndices[0] % 4 == downbeatPhase`.
+- `bpm` — from the steady beat intervals (not quantised to the model's
+  50 fps frames).
+- `firstSolidBeat` — the **mix-in point**: index of the first downbeat from
+  which the kick/bass band holds at the track's main level for two bars;
+  `-1` when there is no such point in the first 40 % of the track (drumless
+  or slow-building tracks), when the track is too short, or when there are
+  no beats.
+- `confidence` — 0..1, share of detected (not interpolated) beats times how
+  steady the grid is. beat-this has no score of its own.
+- `duration` — decoded length in seconds.
+- `analyzerVersion` — bumps whenever the grid changes meaningfully, so a
+  caller can re-grid tracks analysed by an older version.
+- `stats` — diagnostics: raw beat count, extra beats dropped, beats filled,
+  breaks in the grid, share of detected downbeats on the chosen phase.
 
-Both endpoints return the same response. On failure: a non-2xx status
-with `{ "error": "<message>" }` — `422` when the audio cannot be decoded
-(permanent for that file), `503` while the model is still loading, `500`
-when the model itself fails.
+Both endpoints return the same response. An empty `beats` array means "no
+pulse" (also for audio under one second). On failure: a non-2xx status
+with `{ "error": "<message>" }`:
+
+| Status | Meaning | Retry? |
+|---|---|---|
+| `400` | empty body / path outside the music root | no |
+| `404` | `/analyze`: file not found | no |
+| `413` | upload over `MAX_UPLOAD_BYTES` | no |
+| `422` | ffmpeg can't decode the file (reason included), or the decode took over `DECODE_TIMEOUT_S` | no, permanent for that file |
+| `500` | the model failed on this input | no |
+| `503` | model still loading, queue full, out of memory, ffmpeg missing, or an internal error; has `Retry-After` | yes |
 
 ### `GET /healthz`
 
 ```json
-{ "status": "ok", "model_loaded": true, "checkpoint": "final0" }
+{
+  "status": "ok", "model_loaded": true, "checkpoint": "final0",
+  "analyzerVersion": 2, "busy": false, "waiting": 0,
+  "analysed": 12, "failed": 0, "last_error": null
+}
 ```
 
 ## How it works
@@ -84,8 +116,8 @@ when the model itself fails.
 - The **`final0` checkpoint** is baked into the Docker image at build
   time. The `Audio2Beats` model is loaded **once** in the FastAPI
   lifespan — loading is the expensive part — and reused for every
-  request, so requests are effectively serialized by the single
-  in-process model.
+  request. One analysis runs at a time; up to `MAX_QUEUE` (4) wait, more
+  get `503` right away.
 - The service decodes audio itself with the **`ffmpeg` binary** and
   feeds beat-this a raw waveform; beat-this's own torchaudio/soundfile
   loader cannot decode mp3 in this image.
@@ -95,6 +127,25 @@ when the model itself fails.
 - It holds nothing between requests, so it can be scaled to zero and
   started only when there is something to analyse (pass-the-aux does this
   on Kubernetes).
+
+## How the grid is built
+
+beat-this without its DBN post-processor has high recall, which also means
+it emits things that are not beats: half- and third-beat "extra beats"
+through snare rolls and hi-hat triplets, and holes in sparse parts. A DJ
+app that snaps to the nearest beat and counts bars as "every 4th beat"
+falls off the grid at the first one. `grid.py` therefore:
+
+1. keeps the chain of detected beats that best fits one steady period
+   (dynamic programming; tempo drift of a few percent is fine) and fills
+   holes of a whole number of beats;
+2. picks one bar phase for the whole track from the majority of beat-this's
+   downbeats, dropping up to 3 beats after a break in the grid so the
+   phase holds across it;
+3. finds the mix-in point from the 40–150 Hz band, judged per bar so
+   half-time and broken beats count.
+
+Every analysis logs one line with timings and these stats.
 
 ## Run
 
@@ -137,11 +188,13 @@ overrides.
 
 | Path | Role |
 |---|---|
-| `server.py` | FastAPI app — model lifespan, `/analyze-audio`, `/analyze`, `/healthz` |
+| `server.py` | FastAPI app — model lifespan, `/analyze-audio`, `/analyze`, `/healthz`, status codes |
+| `grid.py` | Pure numpy post-processing: clean grid, bar phase, mix-in point |
+| `tests/` | `python -m unittest discover tests` (no torch needed); `python tests/smoke.py` loads the real model |
 | `Dockerfile` | `python:3.11-slim` + ffmpeg + torch (CPU) + `beat_this` |
 | `compose.yml` | Standalone single-service deployment |
 | `.env.example` | Optional overrides for the standalone deploy |
-| `requirements.txt` | `fastapi`, `uvicorn`, `numpy`, `beat_this` |
+| `requirements.txt` | `fastapi`, `uvicorn`, `numpy`, `beat_this` (pinned commit) |
 | `.dockerignore` | Keeps the Docker build context lean |
 | `CLAUDE.md` | Design notes / contributor contract |
 

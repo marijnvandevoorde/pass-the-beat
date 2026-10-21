@@ -61,6 +61,8 @@ kick/bass at the track's main level, `mix_out_index` the phrase boundary
 leaves 8 bars before the end. Tuning constants sit at the
 top of the file; check changes against real tracks, not only the
 synthetic tests.
+Half/double tempo is left to beat-this; pass-the-aux octave-matches
+tempos when syncing.
 
 ## Model lifecycle
 

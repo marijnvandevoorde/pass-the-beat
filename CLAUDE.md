@@ -66,7 +66,11 @@ tempos when syncing.
 
 ## Model lifecycle
 
-The checkpoint (`final0`) is baked into the image at build time and the
+The checkpoint (`final0`) is baked into the image at build time:
+`scripts/fetch-checkpoint.py` puts it in the torch hub cache, from the
+release asset `checkpoint-final0` on this repo (MIT, mirrored because
+cloud.cp.jku.at went down), with the original host as fallback and a fixed
+sha256. CI runs the same script before the smoke test. The
 `Audio2Beats` model is loaded once in the FastAPI lifespan — loading is
 the expensive part, so it is reused for every request. A lock runs one
 analysis at a time; `MAX_QUEUE` more may wait, the rest get 503.
@@ -109,6 +113,7 @@ curl http://localhost:8000/healthz
 | `server.py` | FastAPI app — model lifespan, endpoints, status codes, logging |
 | `grid.py` | Grid post-processing (clean grid, bar phase, mix-in) |
 | `tests/` | `python -m unittest discover tests` (fake model) + `tests/smoke.py` (real model) |
+| `scripts/fetch-checkpoint.py` | Fetches + sha256-checks the `final0` checkpoint (mirror, then upstream) |
 | `Dockerfile` | python:3.14-slim + ffmpeg + torch CPU + beat_this |
 | `compose.yml` | Standalone single-service deploy (pass-the-aux's stack defines its own) |
 | `.env.example` | Standalone overrides (`MUSIC_DIR` only for `/analyze`) |

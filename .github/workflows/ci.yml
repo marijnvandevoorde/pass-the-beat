@@ -44,5 +44,9 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -p 'test_*.py'
 
+      # From the release mirror, sha256-checked (the original host is unreliable).
+      - name: Fetch checkpoint
+        run: python scripts/fetch-checkpoint.py
+
       - name: Smoke test
         run: python tests/smoke.py

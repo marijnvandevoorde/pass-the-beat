@@ -131,7 +131,10 @@ with `{ "error": "<message>" }`:
 ## How it works
 
 - The **`final0` checkpoint** is baked into the Docker image at build
-  time. The `Audio2Beats` model is loaded **once** in the FastAPI
+  time. `scripts/fetch-checkpoint.py` downloads it from this repo's
+  release `checkpoint-final0` (a mirror; the original host
+  cloud.cp.jku.at has been unreliable), falls back to the original host,
+  and checks its sha256. The `Audio2Beats` model is loaded **once** in the FastAPI
   lifespan — loading is the expensive part — and reused for every
   request. One analysis runs at a time; up to `MAX_QUEUE` (4) wait, more
   get `503` right away.

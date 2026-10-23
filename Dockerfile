@@ -18,11 +18,15 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py grid.py ./
-
 # Bake the checkpoint into the image so a cold container starts (and
-# runs offline) without a first-request download.
-RUN python -c "from beat_this.inference import Audio2Beats; Audio2Beats(checkpoint_path='final0', device='cpu', dbn=False)"
+# runs offline) without a first-request download. The script fetches it from
+# this repo's release mirror (fallback: the original host) and checks its
+# sha256; loading the model once proves the cached file works.
+COPY scripts/fetch-checkpoint.py scripts/
+RUN python scripts/fetch-checkpoint.py \
+    && python -c "from beat_this.inference import Audio2Beats; Audio2Beats(checkpoint_path='final0', device='cpu', dbn=False)"
+
+COPY server.py grid.py ./
 
 ENV MUSIC_ROOT=/music \
     BEATTHIS_CHECKPOINT=final0 \

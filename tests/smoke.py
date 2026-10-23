@@ -1,6 +1,7 @@
 """End-to-end smoke test: boot the app (loads the beat-this model), then
-analyse a 20 s, 120 BPM click track. Needs ffmpeg and network access for the
-checkpoint download. Run from the repo root: `python tests/smoke.py`."""
+analyse a 20 s, 120 BPM click track. Needs ffmpeg and the checkpoint in the
+torch hub cache. Run from the repo root: `python scripts/fetch-checkpoint.py`
+then `python tests/smoke.py`."""
 
 import os
 import subprocess
